@@ -45,6 +45,19 @@ class SysInfo(BaseModel):
 state: List[FanState] = [FanState() for _ in range(FAN_COUNT)]
 info  = SysInfo()
 
+# конфигурация: подписи слотов и пресеты
+config = {"labels": [f"Fan {i}" for i in range(FAN_COUNT)], "presets": {}}
+if CONFIG_FILE.exists():
+    try:
+        with open(CONFIG_FILE) as f:
+            config.update(json.load(f))
+    except Exception:
+        pass
+
+def save_config():
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+
 async def esp_get(path:str):
     url=f"http://{ESP_IP}{path}"
     async with httpx.AsyncClient(timeout=TIMEOUT) as cli:
@@ -69,6 +82,13 @@ class SetReq(BaseModel):
 
 class BoostReq(BaseModel):
     seconds:int = Field(...,ge=0,le=300)
+
+class PresetReq(BaseModel):
+    name:str
+    pwms:List[int]
+
+class LabelsReq(BaseModel):
+    labels:List[str]
 
 @app.post("/set",status_code=204)
 async def set_pwm(req:SetReq):
@@ -110,6 +130,40 @@ async def set_boost(req:BoostReq):
 async def reboot():
     await esp_get("/reboot")
 
+# ──────────────────────── presets & labels ─────────────────────
+@app.get("/config")
+async def get_config():
+    return config
+
+@app.post("/labels",status_code=204)
+async def set_labels(req:LabelsReq):
+    if len(req.labels)!=FAN_COUNT:
+        raise HTTPException(400,"Array of 8 labels expected")
+    config["labels"] = req.labels
+    save_config()
+
+@app.post("/preset",status_code=204)
+async def add_preset(p:PresetReq):
+    if len(p.pwms)!=FAN_COUNT or any(not 0<=v<=255 for v in p.pwms):
+        raise HTTPException(400,"Array of 8 PWM values 0-255 expected")
+    config["presets"][p.name] = p.pwms
+    save_config()
+
+@app.delete("/preset/{name}",status_code=204)
+async def del_preset(name:str):
+    if name in config["presets"]:
+        del config["presets"][name]
+        save_config()
+
+@app.post("/preset/apply",status_code=204)
+async def apply_preset(name:str):
+    pwms=config["presets"].get(name)
+    if not pwms:
+        raise HTTPException(404,"Preset not found")
+    await esp_post_json("/pwm",pwms)
+    for i,v in enumerate(pwms):
+        state[i].pwm=v
+
 # ─────────────────────────── UI  ─────────────────────────────
 HTML=r"""<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -129,21 +183,30 @@ input[type=range]{flex:1;height:6px;background:var(--bd);border-radius:3px;appea
 input::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border-radius:50%;background:var(--ac);cursor:pointer}
 .val{width:48px;text-align:right}
 .cfg{margin-top:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.preset{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
 button{padding:6px 12px;background:var(--ac);border:0;border-radius:6px;color:var(--t);cursor:pointer}</style></head>
 <body><header id=hdr>FanCtl</header><main><section class=case id=case></section><section class=panel id=panel></section></main>
 <script>
-const N=8,deb=60;let q={},timer;const $=id=>document.getElementById(id);let hdr,case_,panel;
+const N=8,deb=60;let q={},timer;const $=id=>document.getElementById(id);let hdr,case_,panel;let labels=[],presets={};
 function build(){panel.insertAdjacentHTML('afterbegin','<div class=info><span id=fw>FW -</span><span id=ip>-</span><span id=upt>0s</span></div>');
-for(let i=0;i<N;i++){case_.insertAdjacentHTML('beforeend',`<div class=slot id=s${i}>Fan ${i}</div>`);
-panel.insertAdjacentHTML('beforeend',`<div class=fan><label>Fan ${i}</label><input id=r${i} type=range min=0 max=255 oninput=chg(${i},this.value)><span class=val id=v${i}>---</span></div>`);}panel.insertAdjacentHTML('beforeend',`<div class=cfg><label>Boost (s)</label><input id=boost type=number min=0 max=300 style="width:70px"><button onclick=save()>Save</button><button onclick=reb()>Reboot</button></div>`);}
+for(let i=0;i<N;i++){case_.insertAdjacentHTML('beforeend',`<div class=slot id=s${i}></div>`);
+panel.insertAdjacentHTML('beforeend',`<div class=fan><label id=l${i}></label><input id=r${i} type=range min=0 max=255 oninput=chg(${i},this.value)><span class=val id=v${i}>---</span></div>`);}panel.insertAdjacentHTML('beforeend',`<div class=cfg><label>Boost (s)</label><input id=boost type=number min=0 max=300 style="width:70px"><button onclick=save()>Save</button><button onclick=reb()>Reboot</button></div>`);
+panel.insertAdjacentHTML('beforeend',`<div class=preset><select id=sel></select><input id=pname placeholder="name" style="width:80px"><button onclick=loadPreset()>Load</button><button onclick=savePreset()>Save</button><button onclick=delPreset()>Del</button><button onclick=editLabels()>Labels</button></div>`);}
 function chg(i,v){$('v'+i).textContent=v;$('s'+i).style.background=`linear-gradient(90deg,#1d2533 ${v/2.55}%,var(--slot)0)`;q[i]=v;clearTimeout(timer);timer=setTimeout(send,deb);} 
 async function send(){const arr=Object.entries(q);q={};await Promise.allSettled(arr.map(([k,v])=>fetch('/set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({fan:+k,pwm:+v})})));}
 async function refresh(){const st=await fetch('/status').then(r=>r.json()),inf=await fetch('/info').then(r=>r.json());
 $('fw').textContent='FW '+inf.fw;$('ip').textContent=inf.ip;$('upt').textContent=inf.upt+'s';hdr.textContent='FanCtl '+inf.ip;
 $('boost').value=inf.boost;st.forEach((f,i)=>{if(q[i])return;const r=$('r'+i);if(document.activeElement===r)return;r.value=f.pwm;$('v'+i).textContent=f.pwm;$('s'+i).style.background=f.pwm?`linear-gradient(90deg,#1d2533 ${f.pwm/2.55}%,var(--slot)0)`:'var(--slot)';});}
 async function save(){await fetch('/boost',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({seconds:+$('boost').value})});alert('Saved');}
-async function reb(){if(confirm('Reboot ESP32?'))await fetch('/reboot',{method:'POST'});} 
-window.addEventListener('load',()=>{hdr=$('hdr');case_=$('case');panel=$('panel');build();refresh();setInterval(refresh,2000);});
+async function reb(){if(confirm('Reboot ESP32?'))await fetch('/reboot',{method:'POST'});}
+function refreshLabels(){labels.forEach((t,i)=>{$('s'+i).textContent=t;$('l'+i).textContent=t;});}
+function fillPresets(){const sel=$('sel');sel.innerHTML='';Object.keys(presets).forEach(n=>sel.insertAdjacentHTML('beforeend',`<option>${n}</option>`));}
+async function loadCfg(){const cfg=await fetch('/config').then(r=>r.json());labels=cfg.labels||[];presets=cfg.presets||{};}
+async function loadPreset(){const n=$('sel').value;if(!n||!presets[n])return;await fetch('/preset/apply?name='+encodeURIComponent(n),{method:'POST'});refresh();}
+async function savePreset(){const n=$('pname').value.trim();if(!n)return alert('name?');const arr=[...Array(N)].map((_,i)=>+$('r'+i).value);await fetch('/preset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:n,pwms:arr})});presets[n]=arr;fillPresets();alert('Saved');}
+async function delPreset(){const n=$('sel').value;if(!n||!presets[n])return;if(!confirm('Delete '+n+'?'))return;await fetch('/preset/'+encodeURIComponent(n),{method:'DELETE'});delete presets[n];fillPresets();}
+async function editLabels(){const arr=labels.map((t,i)=>prompt('Label '+i,t)||t);await fetch('/labels',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({labels:arr})});labels=arr;refreshLabels();}
+window.addEventListener('load',async()=>{hdr=$('hdr');case_=$('case');panel=$('panel');await loadCfg();build();refreshLabels();fillPresets();refresh();setInterval(refresh,2000);});
 </script></body></html>"""
 
 @app.get("/ui",response_class=HTMLResponse)
