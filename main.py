@@ -111,16 +111,18 @@ async def reboot():
     await esp_get("/reboot")
 
 # ─────────────────────────── UI  ─────────────────────────────
-HTML=r"""<!DOCTYPE html><html lang=en><head><meta charset=utf‑8>
+HTML=r"""<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>FanCtl</title>
-<style>:root{--b:#0e1116;--p:#181b22;--slot:#0e1116;--bd:#2a2d34;--ac:#6ab4ff;--t:#f1f1f1;font-family:Inter,Arial}
-html,body{margin:0;height:100%;background:var(--b);color:var(--t)}
-main{display:flex;flex-wrap:wrap;gap:24px;padding:24px;justify-content:center}
+<style>:root{--b:#10151b;--p:#1e212a;--slot:#10151b;--bd:#3b4048;--ac:#79b8ff;--t:#f1f1f1;font-family:system-ui,Arial}
+body{margin:0;height:100%;background:var(--b);color:var(--t);display:flex;flex-direction:column}
+header{padding:16px;background:var(--p);text-align:center;font-size:18px;font-weight:600}
+main{flex:1;display:flex;flex-wrap:wrap;gap:24px;padding:24px;justify-content:center;overflow-y:auto}
 .case,.panel{background:var(--p);border-radius:12px;padding:20px}
 .case{width:260px;display:grid;gap:8px}
 .slot{height:56px;border:1px solid var(--bd);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--ac);font-size:13px}
 .panel{min-width:260px;max-width:640px;display:flex;flex-direction:column;gap:12px}
+.info{font-size:14px;display:flex;gap:12px;flex-wrap:wrap;margin-bottom:6px}
 .fan{display:flex;align-items:center;gap:12px}
 .fan label{width:60px;text-align:right}
 input[type=range]{flex:1;height:6px;background:var(--bd);border-radius:3px;appearance:none}
@@ -128,17 +130,20 @@ input::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border-radius
 .val{width:48px;text-align:right}
 .cfg{margin-top:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 button{padding:6px 12px;background:var(--ac);border:0;border-radius:6px;color:var(--t);cursor:pointer}</style></head>
-<body><main><section class=case id=case></section><section class=panel id=panel></section></main>
+<body><header id=hdr>FanCtl</header><main><section class=case id=case></section><section class=panel id=panel></section></main>
 <script>
-const N=8,deb=60;let q={},timer;const $=id=>document.getElementById(id);
-function build(){for(let i=0;i<N;i++){case_.insertAdjacentHTML('beforeend',`<div class=slot id=s${i}>Fan ${i}</div>`);
-panel.insertAdjacentHTML('beforeend',`<div class=fan><label>Fan ${i}</label><input id=r${i} type=range min=0 max=255 oninput=chg(${i},this.value)><span class=val id=v${i}>---</span></div>`);}panel.insertAdjacentHTML('beforeend',`<div class=cfg><label>Boost (s)</label><input id=boost type=number min=0 max=300 style="width:70px"><button onclick=save()>Save</button><button onclick=reb()>Reboot</button></div>`);} 
+const N=8,deb=60;let q={},timer;const $=id=>document.getElementById(id);let hdr,case_,panel;
+function build(){panel.insertAdjacentHTML('afterbegin','<div class=info><span id=fw>FW -</span><span id=ip>-</span><span id=upt>0s</span></div>');
+for(let i=0;i<N;i++){case_.insertAdjacentHTML('beforeend',`<div class=slot id=s${i}>Fan ${i}</div>`);
+panel.insertAdjacentHTML('beforeend',`<div class=fan><label>Fan ${i}</label><input id=r${i} type=range min=0 max=255 oninput=chg(${i},this.value)><span class=val id=v${i}>---</span></div>`);}panel.insertAdjacentHTML('beforeend',`<div class=cfg><label>Boost (s)</label><input id=boost type=number min=0 max=300 style="width:70px"><button onclick=save()>Save</button><button onclick=reb()>Reboot</button></div>`);}
 function chg(i,v){$('v'+i).textContent=v;$('s'+i).style.background=`linear-gradient(90deg,#1d2533 ${v/2.55}%,var(--slot)0)`;q[i]=v;clearTimeout(timer);timer=setTimeout(send,deb);} 
 async function send(){const arr=Object.entries(q);q={};await Promise.allSettled(arr.map(([k,v])=>fetch('/set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({fan:+k,pwm:+v})})));}
-async function refresh(){const st=await fetch('/status').then(r=>r.json()),inf=await fetch('/info').then(r=>r.json());$('boost').value=inf.boost;st.forEach((f,i)=>{if(q[i])return;const r=$('r'+i);if(document.activeElement===r)return;r.value=f.pwm;$('v'+i).textContent=f.pwm;$('s'+i).style.background=f.pwm?`linear-gradient(90deg,#1d2533 ${f.pwm/2.55}%,var(--slot)0)`:'var(--slot)';});}
+async function refresh(){const st=await fetch('/status').then(r=>r.json()),inf=await fetch('/info').then(r=>r.json());
+$('fw').textContent='FW '+inf.fw;$('ip').textContent=inf.ip;$('upt').textContent=inf.upt+'s';hdr.textContent='FanCtl '+inf.ip;
+$('boost').value=inf.boost;st.forEach((f,i)=>{if(q[i])return;const r=$('r'+i);if(document.activeElement===r)return;r.value=f.pwm;$('v'+i).textContent=f.pwm;$('s'+i).style.background=f.pwm?`linear-gradient(90deg,#1d2533 ${f.pwm/2.55}%,var(--slot)0)`:'var(--slot)';});}
 async function save(){await fetch('/boost',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({seconds:+$('boost').value})});alert('Saved');}
 async function reb(){if(confirm('Reboot ESP32?'))await fetch('/reboot',{method:'POST'});} 
-window.addEventListener('load',()=>{case_=$('case');panel=$('panel');build();refresh();setInterval(refresh,2000);});
+window.addEventListener('load',()=>{hdr=$('hdr');case_=$('case');panel=$('panel');build();refresh();setInterval(refresh,2000);});
 </script></body></html>"""
 
 @app.get("/ui",response_class=HTMLResponse)
